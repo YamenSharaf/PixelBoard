@@ -14,6 +14,18 @@ import shutil
 import zipfile
 import subprocess
 
+# Signing settings (build.sh exports these; defaults match the original local build)
+KS_PASSWORD = os.environ.get('PIXELBOARD_KEYSTORE_PASSWORD', 'pixelboard')
+KEY_ALIAS = os.environ.get('PIXELBOARD_KEY_ALIAS', 'pixelboard')
+# In strict mode (CI) any signing problem is fatal instead of leaving an unsigned APK behind
+STRICT = os.environ.get('PIXELBOARD_STRICT') == '1'
+
+def fail_or_fallback(message, temp_apk, target_apk):
+    print(message)
+    if STRICT:
+        sys.exit(1)
+    shutil.move(temp_apk, target_apk)
+
 def find_sdk_tool(tool_name):
     # Check environment variables
     for env_var in ['ANDROID_HOME', 'ANDROID_SDK_ROOT']:
@@ -153,31 +165,29 @@ def sanitize_apk(target_apk, input_apk, keystore_path):
     apksigner = find_sdk_tool('apksigner')
 
     if not zipalign or not apksigner:
-        print(f"⚠️ Warning: zipalign ({zipalign}) or apksigner ({apksigner}) not found. Moving temp APK in place.")
-        shutil.move(temp_apk, target_apk)
+        fail_or_fallback(f"⚠️ Warning: zipalign ({zipalign}) or apksigner ({apksigner}) not found. Moving temp APK in place.", temp_apk, target_apk)
         return
 
     # Run zipalign
     align_cmd = [zipalign, '-f', '-p', '4', temp_apk, aligned_apk]
     res = subprocess.run(align_cmd, capture_output=True, text=True)
     if res.returncode != 0:
-        print(f"❌ zipalign failed: {res.stderr}")
-        shutil.move(temp_apk, target_apk)
+        fail_or_fallback(f"❌ zipalign failed: {res.stderr}", temp_apk, target_apk)
         return
 
     # Run apksigner
     sign_cmd = [
         apksigner, 'sign',
         '--ks', keystore_path,
-        '--ks-pass', 'pass:pixelboard',
-        '--key-pass', 'pass:pixelboard',
-        '--ks-key-alias', 'pixelboard',
+        '--ks-pass', 'env:PIXELBOARD_KEYSTORE_PASSWORD',
+        '--key-pass', 'env:PIXELBOARD_KEYSTORE_PASSWORD',
+        '--ks-key-alias', KEY_ALIAS,
         aligned_apk
     ]
-    res = subprocess.run(sign_cmd, capture_output=True, text=True)
+    res = subprocess.run(sign_cmd, capture_output=True, text=True,
+                         env={**os.environ, 'PIXELBOARD_KEYSTORE_PASSWORD': KS_PASSWORD})
     if res.returncode != 0:
-        print(f"❌ apksigner failed: {res.stderr}")
-        shutil.move(temp_apk, target_apk)
+        fail_or_fallback(f"❌ apksigner failed: {res.stderr}", temp_apk, target_apk)
         return
 
     # Verify signature
@@ -188,8 +198,7 @@ def sanitize_apk(target_apk, input_apk, keystore_path):
         if os.path.exists(temp_apk):
             os.remove(temp_apk)
     else:
-        print(f"❌ Verification failed: {res.stderr}")
-        shutil.move(temp_apk, target_apk)
+        fail_or_fallback(f"❌ Verification failed: {res.stderr}", temp_apk, target_apk)
 
 if __name__ == '__main__':
     if len(sys.argv) < 4:

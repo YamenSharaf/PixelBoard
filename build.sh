@@ -96,7 +96,17 @@ echo "=== 🔨 Applying Patches to $INPUT_APK ==="
 mkdir -p output
 mkdir -p tools/patcher-data
 
-KEYSTORE_PATH="tools/patcher-data/pixelboard.keystore"
+# Signing key: override via env (CI passes the fork's release key); defaults keep
+# the original local-build behaviour of a throwaway auto-generated keystore.
+KEYSTORE_PATH="${PIXELBOARD_KEYSTORE_PATH:-tools/patcher-data/pixelboard.keystore}"
+KEYSTORE_PASSWORD="${PIXELBOARD_KEYSTORE_PASSWORD:-pixelboard}"
+KEY_ALIAS="${PIXELBOARD_KEY_ALIAS:-pixelboard}"
+export PIXELBOARD_KEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" PIXELBOARD_KEY_ALIAS="$KEY_ALIAS"
+
+if [[ -n "${PIXELBOARD_KEYSTORE_PATH:-}" ]] && [[ ! -f "$KEYSTORE_PATH" ]]; then
+    echo "❌ Error: PIXELBOARD_KEYSTORE_PATH is set but $KEYSTORE_PATH does not exist"
+    exit 1
+fi
 if [[ ! -f "$KEYSTORE_PATH" ]]; then
     echo "🔑 Generating PixelBoard release keystore..."
     keytool -genkeypair \
@@ -117,15 +127,38 @@ fi
     --striplibs=arm64-v8a \
     --signer="PixelBoard" \
     --keystore="$KEYSTORE_PATH" \
-    --keystore-password=pixelboard \
-    --keystore-entry-alias=pixelboard \
-    --keystore-entry-password=pixelboard \
+    --keystore-password="$KEYSTORE_PASSWORD" \
+    --keystore-entry-alias="$KEY_ALIAS" \
+    --keystore-entry-password="$KEYSTORE_PASSWORD" \
     --temporary-files-path="tools/patcher-data/tmp" \
     -o=output/PixelBoard.apk \
     -r=output/patching-result.json \
     "$INPUT_APK"
 
-python3 tools/sanitize_apk_resources.py output/PixelBoard.apk "$INPUT_APK" "$KEYSTORE_PATH"
+# The sanitizer diffs XML entries against the stock APK. For split bundles
+# (.xapk/.apkm/.apks) those entries live inside the base APK, so extract it first.
+REFERENCE_APK="$INPUT_APK"
+case "${INPUT_APK,,}" in
+    *.xapk|*.apkm|*.apks)
+        REFERENCE_APK="tools/patcher-data/reference-base.apk"
+        python3 - "$INPUT_APK" "$REFERENCE_APK" <<'PY'
+import sys, zipfile
+bundle, out = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(bundle) as z:
+    apks = [n for n in z.namelist() if n.endswith('.apk') and '/' not in n]
+    # base.apk (apkm/apks) or <package>.apk (xapk); splits are config.*/split_*
+    base = [n for n in apks if n == 'base.apk'] or \
+           [n for n in apks if not n.startswith(('config.', 'split_'))]
+    if len(base) != 1:
+        sys.exit(f"Could not identify base APK in {bundle}: {apks}")
+    with open(out, 'wb') as f:
+        f.write(z.read(base[0]))
+    print(f"📂 Extracted reference base APK: {base[0]}")
+PY
+        ;;
+esac
+
+python3 tools/sanitize_apk_resources.py output/PixelBoard.apk "$REFERENCE_APK" "$KEYSTORE_PATH"
 
 if [[ -f "output/patching-result.json" ]]; then
     GBOARD_VER=$(grep -o '"packageVersion":"[^"]*"' output/patching-result.json | cut -d'"' -f4 | cut -d'-' -f1)

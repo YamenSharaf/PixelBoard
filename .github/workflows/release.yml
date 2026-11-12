@@ -1,0 +1,127 @@
+name: Build & Release PixelBoard APK
+
+# Builds the patched, signed APK from the stock Gboard bundle kept on a *draft*
+# release (never public) and publishes it as a GitHub Release for Obtainium.
+# Pushes to other branches only build and upload a workflow artifact (dry run).
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # create releases + read draft releases
+  packages: read    # Morphe Gradle plugin from GitHub Packages
+
+env:
+  BASE_TAG: base-gboard-18.6.3
+  BASE_ASSET: gboard-18-6-3-1002251336-release-arm64-v8a.xapk
+  BUILD_TOOLS: '35.0.0'
+
+jobs:
+  build:
+    name: Build signed APK
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PUBLISH: ${{ github.ref == 'refs/heads/main' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up OpenJDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install build-tools (zipalign, apksigner, aapt2)
+        run: sdkmanager --install "build-tools;${BUILD_TOOLS}"
+
+      - name: Fetch stock Gboard bundle from draft release
+        run: |
+          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+            --jq ".[] | select(.draft and .tag_name == \"${BASE_TAG}\") | .id" | head -n1)
+          if [[ -z "$release_id" ]]; then
+            echo "::error::No draft release tagged ${BASE_TAG} found"; exit 1
+          fi
+          asset_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
+            --jq ".[] | select(.name == \"${BASE_ASSET}\") | .id")
+          if [[ -z "$asset_id" ]]; then
+            echo "::error::Asset ${BASE_ASSET} not found on draft ${BASE_TAG}"; exit 1
+          fi
+          mkdir -p input
+          gh api -H "Accept: application/octet-stream" \
+            "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "input/${BASE_ASSET}"
+          ls -lh input/
+
+      - name: Restore signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.PIXELBOARD_KEYSTORE_B64 }}
+        run: |
+          if [[ -z "$KEYSTORE_B64" ]]; then
+            echo "::error::Secret PIXELBOARD_KEYSTORE_B64 is not set"; exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "${RUNNER_TEMP}/release.keystore"
+          echo "PIXELBOARD_KEYSTORE_PATH=${RUNNER_TEMP}/release.keystore" >> "$GITHUB_ENV"
+
+      - name: Build patches and APK
+        env:
+          PIXELBOARD_KEYSTORE_PASSWORD: ${{ secrets.PIXELBOARD_KEYSTORE_PASSWORD }}
+          PIXELBOARD_KEY_ALIAS: ${{ secrets.PIXELBOARD_KEY_ALIAS }}
+          PIXELBOARD_STRICT: '1'
+        run: |
+          chmod +x build.sh pixelboard-patches/gradlew
+          ./build.sh --rebuild "input/${BASE_ASSET}"
+
+      - name: Verify APK is signed with the release key
+        env:
+          PIXELBOARD_KEYSTORE_PASSWORD: ${{ secrets.PIXELBOARD_KEYSTORE_PASSWORD }}
+          PIXELBOARD_KEY_ALIAS: ${{ secrets.PIXELBOARD_KEY_ALIAS }}
+        run: |
+          apksigner="${ANDROID_HOME}/build-tools/${BUILD_TOOLS}/apksigner"
+          expected=$(keytool -exportcert -keystore "$PIXELBOARD_KEYSTORE_PATH" \
+            -storepass:env PIXELBOARD_KEYSTORE_PASSWORD -alias "$PIXELBOARD_KEY_ALIAS" \
+            | sha256sum | cut -d' ' -f1)
+          actual=$("$apksigner" verify --print-certs output/PixelBoard.apk \
+            | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')
+          echo "expected: $expected"
+          echo "actual:   $actual"
+          [[ -n "$actual" && "$actual" == "$expected" ]] || { echo "::error::APK signer mismatch"; exit 1; }
+
+      - name: Name release
+        id: meta
+        run: |
+          version=$(grep -E '^version\s*=' pixelboard-patches/gradle.properties | cut -d'=' -f2 | tr -d ' ')
+          tag="${version}-fork.${GITHUB_RUN_NUMBER}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          cp output/PixelBoard.apk "output/PixelBoard-${tag}.apk"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PixelBoard-${{ steps.meta.outputs.tag }}
+          path: |
+            output/PixelBoard-${{ steps.meta.outputs.tag }}.apk
+            output/patching-result.json
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: env.PUBLISH == 'true'
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+          gh release create "$tag" "output/PixelBoard-${tag}.apk" \
+            --target "$GITHUB_SHA" \
+            --title "PixelBoard ${tag}" \
+            --notes "Built from ${GITHUB_SHA::7} on top of stock Gboard bundle \`${BASE_ASSET}\`."

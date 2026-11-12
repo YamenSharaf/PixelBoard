@@ -151,7 +151,7 @@ public final class GboardPatchesSettingsActivity extends Activity
     private static final String TOOLBAR_TITLE_PATCHES = "Patches";
     private static final String ABOUT_AUTHOR_URL = "https://github.com/Akshayykadam";
     private static final String ABOUT_PATCH_REPOSITORY_URL =
-            "https://github.com/Akshayykadam/PixelBoard";
+            "https://github.com/YamenSharaf/PixelBoard";
     private static final String DOCUMENT_TYPE_FALLBACK = "text/plain";
     private static final String DOCUMENT_PICKER_FAILED = "Unable to open file picker.";
     private static final String DOCUMENT_WRITE_FAILED = "Failed to export file.";

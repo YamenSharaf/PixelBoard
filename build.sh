@@ -35,12 +35,19 @@ for arg in "$@"; do
 done
 
 PATCH_VERSION=$(grep -E "^version\s*=" pixelboard-patches/gradle.properties | cut -d'=' -f2 | tr -d ' ')
+PATCH_VERSION="${PIXELBOARD_VERSION:-$PATCH_VERSION}"
 MPP_PATH="patches/PixelBoard.mpp"
 
 if [[ "$REBUILD_PATCH" == true ]] || [[ ! -f "$MPP_PATH" ]]; then
     echo "=== 🎹 Compiling PixelBoard Patch Bundle from Source ==="
     cd pixelboard-patches
-    ./gradlew clean :patches:buildAndroid
+    # PIXELBOARD_VERSION (e.g. 1.3.4-fork.7) overrides gradle.properties so the
+    # in-app updater compares the exact release tag against the installed build.
+    if [[ -n "${PIXELBOARD_VERSION:-}" ]]; then
+        ./gradlew clean :patches:buildAndroid -Pversion="$PIXELBOARD_VERSION"
+    else
+        ./gradlew clean :patches:buildAndroid
+    fi
     cd "$SCRIPT_DIR"
 
     COMPILED_MPP="pixelboard-patches/patches/build/libs/patches-${PATCH_VERSION}.mpp"

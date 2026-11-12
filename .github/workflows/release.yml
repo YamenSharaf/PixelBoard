@@ -76,14 +76,23 @@ jobs:
           echo "$KEYSTORE_B64" | base64 -d > "${RUNNER_TEMP}/release.keystore"
           echo "PIXELBOARD_KEYSTORE_PATH=${RUNNER_TEMP}/release.keystore" >> "$GITHUB_ENV"
 
+      - name: Name release
+        id: meta
+        run: |
+          version=$(grep -E '^version\s*=' pixelboard-patches/gradle.properties | cut -d'=' -f2 | tr -d ' ')
+          tag="${version}-fork.${GITHUB_RUN_NUMBER}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
       - name: Build patches and APK
         env:
           PIXELBOARD_KEYSTORE_PASSWORD: ${{ secrets.PIXELBOARD_KEYSTORE_PASSWORD }}
           PIXELBOARD_KEY_ALIAS: ${{ secrets.PIXELBOARD_KEY_ALIAS }}
           PIXELBOARD_STRICT: '1'
+          PIXELBOARD_VERSION: ${{ steps.meta.outputs.tag }}
         run: |
           chmod +x build.sh pixelboard-patches/gradlew
           ./build.sh --rebuild "input/${BASE_ASSET}"
+          cp output/PixelBoard.apk "output/PixelBoard-${PIXELBOARD_VERSION}.apk"
 
       - name: Verify APK is signed with the release key
         env:
@@ -99,14 +108,6 @@ jobs:
           echo "expected: $expected"
           echo "actual:   $actual"
           [[ -n "$actual" && "$actual" == "$expected" ]] || { echo "::error::APK signer mismatch"; exit 1; }
-
-      - name: Name release
-        id: meta
-        run: |
-          version=$(grep -E '^version\s*=' pixelboard-patches/gradle.properties | cut -d'=' -f2 | tr -d ' ')
-          tag="${version}-fork.${GITHUB_RUN_NUMBER}"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          cp output/PixelBoard.apk "output/PixelBoard-${tag}.apk"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

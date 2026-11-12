@@ -43,11 +43,15 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # ubuntu-latest ships the Android SDK; setup-android@v3 breaks on the
+      # removed 'tools' package, so use the preinstalled sdkmanager directly.
       - name: Install build-tools (zipalign, apksigner, aapt2)
-        run: sdkmanager --install "build-tools;${BUILD_TOOLS}"
+        run: |
+          sdkmanager=$(ls -d "${ANDROID_HOME}"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -n1)
+          echo "Using $sdkmanager"
+          yes | "$sdkmanager" --licenses > /dev/null || true
+          "$sdkmanager" --install "build-tools;${BUILD_TOOLS}"
+          ls "${ANDROID_HOME}/build-tools/${BUILD_TOOLS}/" | grep -E '^(zipalign|apksigner|aapt2)$'
 
       - name: Fetch stock Gboard bundle from draft release
         run: |

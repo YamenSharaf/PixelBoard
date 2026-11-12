@@ -149,13 +149,23 @@ case "${INPUT_APK,,}" in
     *.xapk|*.apkm|*.apks)
         REFERENCE_APK="tools/patcher-data/reference-base.apk"
         python3 - "$INPUT_APK" "$REFERENCE_APK" <<'PY'
-import sys, zipfile
+import json, sys, zipfile
 bundle, out = sys.argv[1], sys.argv[2]
 with zipfile.ZipFile(bundle) as z:
-    apks = [n for n in z.namelist() if n.endswith('.apk') and '/' not in n]
-    # base.apk (apkm/apks) or <package>.apk (xapk); splits are config.*/split_*
+    names = z.namelist()
+    apks = [n for n in names if n.endswith('.apk') and '/' not in n]
+    # .xapk: manifest.json names the package, base is <package>.apk
+    pkg = None
+    if 'manifest.json' in names:
+        try:
+            pkg = json.loads(z.read('manifest.json')).get('package_name')
+        except ValueError:
+            pass
+    # .apkm/.apks: base.apk. Fallback: anything that is not a config/feature split.
     base = [n for n in apks if n == 'base.apk'] or \
-           [n for n in apks if not n.startswith(('config.', 'split_'))]
+           [n for n in apks if pkg and n == f'{pkg}.apk'] or \
+           [n for n in apks if not n.startswith(('config.', 'split_'))
+                               and not n.endswith('_split.apk')]
     if len(base) != 1:
         sys.exit(f"Could not identify base APK in {bundle}: {apks}")
     with open(out, 'wb') as f:

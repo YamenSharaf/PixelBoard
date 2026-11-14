@@ -43,11 +43,16 @@ if [[ "$REBUILD_PATCH" == true ]] || [[ ! -f "$MPP_PATH" ]]; then
     cd pixelboard-patches
     # PIXELBOARD_VERSION (e.g. 1.3.4-fork.7) overrides gradle.properties so the
     # in-app updater compares the exact release tag against the installed build.
+    # PIXELBOARD_PACKAGE_NAME (e.g. com.akshaykadam.pixelboard.dev) builds a
+    # side-by-side variant that does not conflict with an upstream install.
+    GRADLE_ARGS=(clean :patches:buildAndroid)
     if [[ -n "${PIXELBOARD_VERSION:-}" ]]; then
-        ./gradlew clean :patches:buildAndroid -Pversion="$PIXELBOARD_VERSION"
-    else
-        ./gradlew clean :patches:buildAndroid
+        GRADLE_ARGS+=(-Pversion="$PIXELBOARD_VERSION")
     fi
+    if [[ -n "${PIXELBOARD_PACKAGE_NAME:-}" ]]; then
+        GRADLE_ARGS+=(-PpixelboardPackageName="$PIXELBOARD_PACKAGE_NAME")
+    fi
+    ./gradlew "${GRADLE_ARGS[@]}"
     cd "$SCRIPT_DIR"
 
     COMPILED_MPP="pixelboard-patches/patches/build/libs/patches-${PATCH_VERSION}.mpp"
@@ -128,9 +133,28 @@ if [[ ! -f "$KEYSTORE_PATH" ]]; then
         >/dev/null 2>&1
 fi
 
+# PIXELBOARD_APP_NAME overrides the launcher/keyboard name from options.json
+OPTIONS_FILE="options.json"
+if [[ -n "${PIXELBOARD_APP_NAME:-}" ]]; then
+    OPTIONS_FILE="tools/patcher-data/options.json"
+    python3 - "$PIXELBOARD_APP_NAME" "$OPTIONS_FILE" <<'PY'
+import json, sys
+name, out = sys.argv[1], sys.argv[2]
+with open('options.json') as f:
+    data = json.load(f)
+for bundle in data:
+    rename = bundle.get('patches', {}).get('Package Rename')
+    if rename is not None:
+        rename.setdefault('options', {})['app_display_name'] = name
+with open(out, 'w') as f:
+    json.dump(data, f, indent=4)
+print(f"🏷️  App display name: {name}")
+PY
+fi
+
 "$JAVA_BIN" -jar tools/patcher.jar patch \
     --patches="$MPP_PATH" \
-    --options-file=options.json \
+    --options-file="$OPTIONS_FILE" \
     --striplibs=arm64-v8a \
     --signer="PixelBoard" \
     --keystore="$KEYSTORE_PATH" \

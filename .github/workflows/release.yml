@@ -23,6 +23,10 @@ env:
   BASE_TAG: base-gboard-18.6.3
   BASE_ASSET: gboard-18-6-3-1002251336-release-arm64-v8a.xapk
   BUILD_TOOLS: '35.0.0'
+  # Side-by-side dev variant: installs next to upstream PixelBoard.
+  # Keep the com.akshaykadam.pixelboard prefix (runtime code matches by prefix).
+  PIXELBOARD_PACKAGE_NAME: com.akshaykadam.pixelboard.dev
+  PIXELBOARD_APP_NAME: PixelBoard Dev
 
 jobs:
   build:
@@ -96,7 +100,14 @@ jobs:
         run: |
           chmod +x build.sh pixelboard-patches/gradlew
           ./build.sh --rebuild "input/${BASE_ASSET}"
-          cp output/PixelBoard.apk "output/PixelBoard-${PIXELBOARD_VERSION}.apk"
+          cp output/PixelBoard.apk "output/PixelBoard-Dev-${PIXELBOARD_VERSION}.apk"
+
+      - name: Verify package name
+        run: |
+          aapt2="${ANDROID_HOME}/build-tools/${BUILD_TOOLS}/aapt2"
+          pkg=$("$aapt2" dump packagename output/PixelBoard.apk)
+          echo "package: $pkg (expected ${PIXELBOARD_PACKAGE_NAME})"
+          [[ "$pkg" == "$PIXELBOARD_PACKAGE_NAME" ]] || { echo "::error::Unexpected package name"; exit 1; }
 
       - name: Verify APK is signed with the release key
         env:
@@ -116,9 +127,9 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PixelBoard-${{ steps.meta.outputs.tag }}
+          name: PixelBoard-Dev-${{ steps.meta.outputs.tag }}
           path: |
-            output/PixelBoard-${{ steps.meta.outputs.tag }}.apk
+            output/PixelBoard-Dev-${{ steps.meta.outputs.tag }}.apk
             output/patching-result.json
           retention-days: 14
 
@@ -126,7 +137,7 @@ jobs:
         if: env.PUBLISH == 'true'
         run: |
           tag="${{ steps.meta.outputs.tag }}"
-          gh release create "$tag" "output/PixelBoard-${tag}.apk" \
+          gh release create "$tag" "output/PixelBoard-Dev-${tag}.apk" \
             --target "$GITHUB_SHA" \
-            --title "PixelBoard ${tag}" \
+            --title "PixelBoard Dev ${tag}" \
             --notes "Built from ${GITHUB_SHA::7} on top of stock Gboard bundle \`${BASE_ASSET}\`."

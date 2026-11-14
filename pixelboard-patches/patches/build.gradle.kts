@@ -106,8 +106,17 @@ sourceSets.test {
 val generatePatchBuildInfo = tasks.register("generatePatchBuildInfo") {
     val outputDir = generatedPatchInfoDir
     val patchVersion = project.version.toString()
+    // Fork/dev builds can install side by side with upstream by overriding this,
+    // e.g. -PpixelboardPackageName=com.akshaykadam.pixelboard.dev. Keep the
+    // com.akshaykadam.pixelboard prefix: runtime code matches the app by prefix.
+    val patchedPackageName = (findProperty("pixelboardPackageName") as String?)
+        ?.trim()?.takeIf { it.isNotEmpty() } ?: "com.akshaykadam.pixelboard"
+    require(Regex("^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$").matches(patchedPackageName)) {
+        "Invalid pixelboardPackageName: $patchedPackageName"
+    }
 
     inputs.property("patchVersion", patchVersion)
+    inputs.property("patchedPackageName", patchedPackageName)
     outputs.dir(outputDir)
 
     doLast {
@@ -120,6 +129,7 @@ val generatePatchBuildInfo = tasks.register("generatePatchBuildInfo") {
 
             internal object PatchBuildInfo {
                 const val VERSION = "$patchVersion"
+                const val PATCHED_PACKAGE_NAME = "$patchedPackageName"
             }
             """.trimIndent()
         )

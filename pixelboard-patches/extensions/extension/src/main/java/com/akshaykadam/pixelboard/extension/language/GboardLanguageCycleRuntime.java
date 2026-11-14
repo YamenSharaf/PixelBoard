@@ -4,7 +4,13 @@
  */
 package com.akshaykadam.pixelboard.extension.language;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
+import android.widget.Toast;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -37,6 +43,10 @@ public final class GboardLanguageCycleRuntime {
     private static final String ENTRY_LAYOUT = "q";
     // DynamicRotationList (qyf).g(entry, wrap): the stock next-entry lookup.
     private static final String ROTATION_NEXT_ENTRY = "g";
+    // Entry context accessor (oyq.a()), used only for the temporary diagnostic toast.
+    private static final String ENTRY_CONTEXT = "a";
+    // TEMPORARY: show what the dedupe sees on every globe press. Remove once verified.
+    private static final boolean DIAGNOSTICS = true;
 
     private static final Map<Class<?>, Method> NEXT_ENTRY_METHODS = new WeakHashMap<>();
 
@@ -52,26 +62,107 @@ public final class GboardLanguageCycleRuntime {
         if (next == null) {
             // Cannot happen on a matching Gboard build; never break the globe key.
             Log.w(TAG, "next-entry lookup not found; globe key left unchanged");
+            if (DIAGNOSTICS) {
+                showDiagnostics(entry, "next-entry method NOT FOUND on "
+                        + (rotationList == null ? "null" : rotationList.getClass().getName()));
+            }
             return null;
         }
         Object candidate = invoke(next, rotationList, entry, wrap);
+        StringBuilder report = DIAGNOSTICS ? new StringBuilder() : null;
+        Object result = candidate;
         try {
             List<?> entries = entriesInListOrder(rotationList);
+            if (report != null) {
+                report.append("wrap=").append(wrap)
+                        .append(" entries=").append(entries == null ? "null" : entries.size())
+                        .append("\ncur: ").append(describe(entry))
+                        .append("\ncand: ").append(describe(candidate));
+                if (entries != null) {
+                    for (int i = 0; i < entries.size(); i++) {
+                        report.append("\n#").append(i).append(' ').append(describe(entries.get(i)));
+                    }
+                }
+            }
             if (candidate == null || entries == null) {
                 return candidate;
             }
             Object current = candidate;
+            result = null;
             // Bounded walk: at most one lap of the rotation.
             for (int step = 0; step <= entries.size() && current != null; step++) {
                 if (!isShadowedDuplicate(current, entries) || current.equals(entry)) {
+                    result = current;
                     return current;
+                }
+                if (report != null) {
+                    report.append("\nskip: ").append(describe(current));
                 }
                 current = invoke(next, rotationList, current, wrap);
             }
-            return current == null ? null : candidate;
+            result = current == null ? null : candidate;
+            return result;
         } catch (Throwable t) {
             Log.w(TAG, "dedupe failed; using stock next entry", t);
+            if (report != null) {
+                report.append("\nERROR: ").append(t);
+            }
+            result = candidate;
             return candidate;
+        } finally {
+            if (report != null) {
+                report.append("\n=> ").append(describe(result));
+                showDiagnostics(entry, report.toString());
+            }
+        }
+    }
+
+    /** TEMPORARY diagnostic: one line per entry with everything the dedupe looks at. */
+    private static String describe(Object entry) {
+        if (entry == null) {
+            return "null";
+        }
+        StringBuilder out = new StringBuilder(entry.getClass().getSimpleName());
+        for (String name : new String[] {ENTRY_PRIMARY_LANGUAGE, ENTRY_MULTILINGUAL_LANGUAGES, "k", ENTRY_LAYOUT}) {
+            out.append(' ').append(name).append('=');
+            try {
+                out.append(call(entry, name));
+            } catch (Throwable t) {
+                out.append('!').append(t.getClass().getSimpleName());
+            }
+        }
+        try {
+            out.append(" key=").append(dedupeKey(entry));
+        } catch (Throwable t) {
+            out.append(" key=!").append(t.getClass().getSimpleName());
+        }
+        return out.toString();
+    }
+
+    private static void showDiagnostics(Object entry, String message) {
+        Log.i(TAG, message);
+        try {
+            Object context = entry == null ? null : call(entry, ENTRY_CONTEXT);
+            if (!(context instanceof Context)) {
+                return;
+            }
+            Context app = ((Context) context).getApplicationContext();
+            // Toasts are capped at two lines on Android 12+, so put the full report on the
+            // clipboard and only announce it.
+            new Handler(Looper.getMainLooper()).post(() -> {
+                try {
+                    ClipboardManager clipboard =
+                            (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (clipboard != null) {
+                        clipboard.setPrimaryClip(ClipData.newPlainText("PixelBoard language cycle", message));
+                    }
+                    Toast.makeText(app, "PixelBoard: language-cycle report copied", Toast.LENGTH_SHORT).show();
+                } catch (Throwable t) {
+                    Log.w(TAG, "diagnostic toast failed", t);
+                }
+            });
+        } catch (Throwable t) {
+            Log.w(TAG, "diagnostic toast failed", t);
         }
     }
 

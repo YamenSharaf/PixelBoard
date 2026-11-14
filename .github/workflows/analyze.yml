@@ -25,7 +25,7 @@ on:
         default: '120'
 
 permissions:
-  contents: read    # read draft release assets
+  contents: write   # draft releases are only visible with write access
 
 env:
   BASE_TAG: base-gboard-18.6.3
@@ -56,6 +56,7 @@ jobs:
         run: |
           release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
             --jq ".[] | select(.draft and .tag_name == \"${BASE_TAG}\") | .id" | head -n1)
+          [[ -n "$release_id" ]] || { echo "::error::No draft release tagged ${BASE_TAG} visible"; exit 1; }
           asset_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
             --jq ".[] | select(.name == \"${BASE_ASSET}\") | .id")
           [[ -n "$asset_id" ]] || { echo "::error::base bundle not found"; exit 1; }

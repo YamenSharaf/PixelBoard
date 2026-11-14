@@ -118,6 +118,10 @@ jobs:
           "$dexdump" -d output/PixelBoard.apk 2>/dev/null > "${RUNNER_TEMP}/dexdump.txt" || true
           n=$(grep -c 'GboardLanguageCycleRuntime;.nextEntry' "${RUNNER_TEMP}/dexdump.txt" || true)
           echo "language cycle (GboardLanguageCycleRuntime.nextEntry) call sites: ${n} (expected 2)"
+          # Show which method each call site sits in (nearest preceding method header).
+          awk '/^ *[0-9a-f]+: \|\[[0-9a-f]+\] / { method = $0 }
+               /GboardLanguageCycleRuntime;\.nextEntry/ { print "  in: " substr(method, 1, 160); print "  at: " substr($0, 1, 160) }' \
+            "${RUNNER_TEMP}/dexdump.txt" || true
           if [[ "$n" != "2" ]]; then
             echo "::warning::Language-cycle dedupe hook not applied as expected (${n} call sites)"
           fi

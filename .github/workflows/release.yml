@@ -110,6 +110,18 @@ jobs:
           echo "package: $pkg (expected ${PIXELBOARD_PACKAGE_NAME})"
           [[ "$pkg" == "$PIXELBOARD_PACKAGE_NAME" ]] || { echo "::error::Unexpected package name"; exit 1; }
 
+      # Bytecode hooks skip silently when a target method looks different, so report
+      # how many hooks actually landed in the built APK (informational).
+      - name: Report bytecode hook call sites
+        run: |
+          dexdump="${ANDROID_HOME}/build-tools/${BUILD_TOOLS}/dexdump"
+          "$dexdump" -d output/PixelBoard.apk 2>/dev/null > "${RUNNER_TEMP}/dexdump.txt" || true
+          n=$(grep -c 'GboardLanguageCycleRuntime;.nextEntry' "${RUNNER_TEMP}/dexdump.txt" || true)
+          echo "language cycle (GboardLanguageCycleRuntime.nextEntry) call sites: ${n} (expected 2)"
+          if [[ "$n" != "2" ]]; then
+            echo "::warning::Language-cycle dedupe hook not applied as expected (${n} call sites)"
+          fi
+
       - name: Verify APK is signed with the release key
         env:
           PIXELBOARD_KEYSTORE_PASSWORD: ${{ secrets.PIXELBOARD_KEYSTORE_PASSWORD }}

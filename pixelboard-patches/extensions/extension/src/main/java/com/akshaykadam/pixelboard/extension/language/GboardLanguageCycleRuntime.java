@@ -6,6 +6,8 @@ package com.akshaykadam.pixelboard.extension.language;
 
 import android.util.Log;
 
+import com.akshaykadam.pixelboard.extension.settings.GboardLanguageCycleSettings;
+
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -53,6 +55,9 @@ public final class GboardLanguageCycleRuntime {
      * skipping entries that duplicate an earlier entry's language set and layout.
      */
     public static Object nextEntry(Object rotationList, Object entry, boolean wrap) {
+        if (!GboardLanguageCycleSettings.isSkipDuplicatePairsEnabled()) {
+            return stockNextEntry(rotationList, entry, wrap);
+        }
         Method next = nextEntryMethod(rotationList, entry);
         if (next == null) {
             // Cannot happen on a matching Gboard build; never break the globe key.
@@ -78,6 +83,12 @@ public final class GboardLanguageCycleRuntime {
             Log.w(TAG, "dedupe failed; using stock next entry", t);
             return candidate;
         }
+    }
+
+    /** Gboard's own next-entry lookup, used when the setting is off. */
+    private static Object stockNextEntry(Object rotationList, Object entry, boolean wrap) {
+        Method next = nextEntryMethod(rotationList, entry);
+        return next == null ? null : invoke(next, rotationList, entry, wrap);
     }
 
     /** True when an earlier entry in the Languages list has the same language set and layout. */

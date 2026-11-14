@@ -4,13 +4,7 @@
  */
 package com.akshaykadam.pixelboard.extension.language;
 
-import android.content.ClipData;
-import android.content.ClipboardManager;
-import android.content.Context;
-import android.os.Handler;
-import android.os.Looper;
 import android.util.Log;
-import android.widget.Toast;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -36,16 +30,16 @@ import java.util.WeakHashMap;
 public final class GboardLanguageCycleRuntime {
     private static final String TAG = "PixelBoardLangCycle";
 
-    // Gboard 18.6.3 input method entry (oyq): i() primary language, j() active multilingual
-    // languages, q() layout/variant. Kept in step with the patch's version-specific target.
+    // Gboard 18.6.3 input method entry (oyq): i() primary language tag, k() the entries active
+    // as multilingual secondaries, q() layout/variant. Kept in step with the patch's target.
+    // j() (multilingual languages) is not used: it holds the secondary ImeDef's tag, which can
+    // be language-only ("de") while the same language as a primary is "de-DE".
     private static final String ENTRY_PRIMARY_LANGUAGE = "i";
-    private static final String ENTRY_MULTILINGUAL_LANGUAGES = "j";
+    private static final String ENTRY_MULTILINGUAL_ENTRIES = "k";
     private static final String ENTRY_LAYOUT = "q";
     // DynamicRotationList (qyf).g(entry, wrap): the stock next-entry lookup.
     private static final String ROTATION_NEXT_ENTRY = "g";
-    // Entry context accessor (oyq.a()), used only for the temporary diagnostic toast.
-    private static final String ENTRY_CONTEXT = "a";
-    // TEMPORARY: show what the dedupe sees on every globe press. Remove once verified.
+    // TEMPORARY: log what the dedupe sees on every globe press. Remove once verified.
     private static final boolean DIAGNOSTICS = true;
 
     private static final Map<Class<?>, Method> NEXT_ENTRY_METHODS = new WeakHashMap<>();
@@ -123,13 +117,20 @@ public final class GboardLanguageCycleRuntime {
             return "null";
         }
         StringBuilder out = new StringBuilder(entry.getClass().getSimpleName());
-        for (String name : new String[] {ENTRY_PRIMARY_LANGUAGE, ENTRY_MULTILINGUAL_LANGUAGES, "k", ENTRY_LAYOUT}) {
-            out.append(' ').append(name).append('=');
-            try {
-                out.append(call(entry, name));
-            } catch (Throwable t) {
-                out.append('!').append(t.getClass().getSimpleName());
+        try {
+            out.append(" i=").append(call(entry, ENTRY_PRIMARY_LANGUAGE))
+                    .append(" j=").append(call(entry, "j"))
+                    .append(" q=").append(call(entry, ENTRY_LAYOUT))
+                    .append(" k=[");
+            Object secondaries = call(entry, ENTRY_MULTILINGUAL_ENTRIES);
+            if (secondaries instanceof Collection) {
+                for (Object secondary : (Collection<?>) secondaries) {
+                    out.append(secondary == null ? null : call(secondary, ENTRY_PRIMARY_LANGUAGE)).append(' ');
+                }
             }
+            out.append(']');
+        } catch (Throwable t) {
+            out.append(" !").append(t.getClass().getSimpleName());
         }
         try {
             out.append(" key=").append(dedupeKey(entry));
@@ -140,30 +141,8 @@ public final class GboardLanguageCycleRuntime {
     }
 
     private static void showDiagnostics(Object entry, String message) {
+        // Read with: adb logcat -s PixelBoardLangCycle
         Log.i(TAG, message);
-        try {
-            Object context = entry == null ? null : call(entry, ENTRY_CONTEXT);
-            if (!(context instanceof Context)) {
-                return;
-            }
-            Context app = ((Context) context).getApplicationContext();
-            // Toasts are capped at two lines on Android 12+, so put the full report on the
-            // clipboard and only announce it.
-            new Handler(Looper.getMainLooper()).post(() -> {
-                try {
-                    ClipboardManager clipboard =
-                            (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
-                    if (clipboard != null) {
-                        clipboard.setPrimaryClip(ClipData.newPlainText("PixelBoard language cycle", message));
-                    }
-                    Toast.makeText(app, "PixelBoard: language-cycle report copied", Toast.LENGTH_SHORT).show();
-                } catch (Throwable t) {
-                    Log.w(TAG, "diagnostic toast failed", t);
-                }
-            });
-        } catch (Throwable t) {
-            Log.w(TAG, "diagnostic toast failed", t);
-        }
     }
 
     /** True when an earlier entry in the Languages list has the same language set and layout. */
@@ -184,19 +163,23 @@ public final class GboardLanguageCycleRuntime {
     }
 
     /**
-     * Order-independent key: sorted {primary} ∪ multilingual languages, plus the layout.
-     * Returns null for entries without multilingual languages, which are never skipped.
+     * Order-independent key: sorted {primary} ∪ primaries of the multilingual secondary
+     * entries, plus the layout. English+German and German+English both become
+     * "[de-DE, en-US]|qwerty". Returns null for entries without multilingual secondaries,
+     * which are never skipped.
      */
     private static String dedupeKey(Object entry) throws Exception {
-        Object multilingual = call(entry, ENTRY_MULTILINGUAL_LANGUAGES);
-        if (!(multilingual instanceof Collection) || ((Collection<?>) multilingual).isEmpty()) {
+        Object secondaries = call(entry, ENTRY_MULTILINGUAL_ENTRIES);
+        if (!(secondaries instanceof Collection) || ((Collection<?>) secondaries).isEmpty()) {
             return null;
         }
         TreeSet<String> languages = new TreeSet<>();
-        for (Object language : (Collection<?>) multilingual) {
-            if (language != null) {
-                languages.add(language.toString());
+        for (Object secondary : (Collection<?>) secondaries) {
+            if (secondary == null) {
+                continue;
             }
+            Object tag = call(secondary, ENTRY_PRIMARY_LANGUAGE);
+            languages.add(String.valueOf(tag != null ? tag : secondary));
         }
         Object primary = call(entry, ENTRY_PRIMARY_LANGUAGE);
         if (primary != null) {

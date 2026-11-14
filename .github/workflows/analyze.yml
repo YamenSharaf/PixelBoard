@@ -65,9 +65,18 @@ jobs:
           python3 - <<'PY'
           import json, zipfile
           with zipfile.ZipFile('bundle.xapk') as z:
-              pkg = json.loads(z.read('manifest.json'))['package_name']
-              open('base.apk', 'wb').write(z.read(f'{pkg}.apk'))
-          print('extracted base.apk')
+              names = z.namelist()
+              apks = [n for n in names if n.endswith('.apk') and '/' not in n]
+              pkg = json.loads(z.read('manifest.json')).get('package_name') \
+                  if 'manifest.json' in names else None
+              # same selection as build.sh: base.apk, <pkg>.apk, else the non-split APK
+              base = [n for n in apks if n == 'base.apk'] or \
+                     [n for n in apks if pkg and n == f'{pkg}.apk'] or \
+                     [n for n in apks if not n.startswith(('config.', 'split_'))
+                                         and not n.endswith('_split.apk')]
+              assert len(base) == 1, apks
+              open('base.apk', 'wb').write(z.read(base[0]))
+          print(f'extracted {base[0]} -> base.apk')
           PY
 
       - name: Decompile with jadx

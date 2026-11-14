@@ -1,0 +1,107 @@
+name: Analyze stock Gboard (jadx search)
+
+# Developer tool for writing patches: decompiles the stock Gboard base APK
+# (from the private draft release) with jadx, caches the output, and greps it.
+# Logs of a public repo are public: print small snippets only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pattern:
+        description: 'Extended regex to search for (grep -E)'
+        required: true
+        default: 'switchToNextLanguage|NEXT_LANGUAGE|SWITCH_LANGUAGE|language_switch'
+      include:
+        description: 'File glob to search (grep --include)'
+        required: false
+        default: '*.java'
+      show:
+        description: 'Snippets to print, space-separated path:start-end (path relative to jadx output)'
+        required: false
+        default: ''
+      max_matches:
+        description: 'Maximum matching lines to print'
+        required: false
+        default: '120'
+
+permissions:
+  contents: read    # read draft release assets
+
+env:
+  BASE_TAG: base-gboard-18.6.3
+  BASE_ASSET: gboard-18-6-3-1002251336-release-arm64-v8a.xapk
+  JADX_VERSION: '1.5.1'
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Set up OpenJDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Restore cached decompilation
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: jadx-out
+          key: jadx-${{ env.JADX_VERSION }}-${{ env.BASE_ASSET }}-v1
+
+      - name: Fetch stock Gboard bundle from draft release
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+            --jq ".[] | select(.draft and .tag_name == \"${BASE_TAG}\") | .id" | head -n1)
+          asset_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
+            --jq ".[] | select(.name == \"${BASE_ASSET}\") | .id")
+          [[ -n "$asset_id" ]] || { echo "::error::base bundle not found"; exit 1; }
+          gh api -H "Accept: application/octet-stream" \
+            "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > bundle.xapk
+          python3 - <<'PY'
+          import json, zipfile
+          with zipfile.ZipFile('bundle.xapk') as z:
+              pkg = json.loads(z.read('manifest.json'))['package_name']
+              open('base.apk', 'wb').write(z.read(f'{pkg}.apk'))
+          print('extracted base.apk')
+          PY
+
+      - name: Decompile with jadx
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o jadx.zip \
+            "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"
+          unzip -q jadx.zip -d jadx
+          # resources too: string/xml names help map obfuscated code to features
+          JAVA_OPTS="-Xmx12g" jadx/bin/jadx --threads-count 4 --show-bad-code \
+            --log-level ERROR -d jadx-out base.apk || true
+          du -sh jadx-out/sources jadx-out/resources 2>/dev/null || true
+
+      - name: Search
+        env:
+          PATTERN: ${{ inputs.pattern }}
+          INCLUDE: ${{ inputs.include }}
+          MAX: ${{ inputs.max_matches }}
+        run: |
+          cd jadx-out
+          total=$(grep -rEn --include="$INCLUDE" -e "$PATTERN" . | wc -l || true)
+          echo "=== ${total} matching lines for /${PATTERN}/ in ${INCLUDE} (showing up to ${MAX}) ==="
+          grep -rEn --include="$INCLUDE" -e "$PATTERN" . | cut -c1-260 | head -n "$MAX" || true
+
+      - name: Show snippets
+        if: inputs.show != ''
+        env:
+          SHOW: ${{ inputs.show }}
+        run: |
+          cd jadx-out
+          for spec in $SHOW; do
+            file="${spec%%:*}"; range="${spec##*:}"
+            start="${range%-*}"; end="${range#*-}"
+            # cap each snippet at 150 lines
+            if (( end - start > 150 )); then end=$(( start + 150 )); fi
+            echo "===== ${file}:${start}-${end} ====="
+            sed -n "${start},${end}p" "$file" | cut -c1-220 | nl -ba -v "$start" || echo "(not found)"
+          done
